@@ -1,0 +1,100 @@
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field
+from bson import ObjectId
+from typing import Optional, List
+from datetime import datetime
+
+# MongoDB Connection
+MONGO_URI = "mongodb://localhost:27017"  # Replace with your Atlas URI if using MongoDB Atlas
+client = AsyncIOMotorClient(MONGO_URI)
+database = client.todo_db
+
+# Schemas
+class Todo(BaseModel):
+    title: str
+    description: Optional[str] = None
+    completed: bool = False
+    category: Optional[str] = None
+    due_date: Optional[datetime] = None  # Bonus: Due date
+    priority: Optional[int] = Field(None, ge=1, le=5)  # Bonus: Priority (1-5)
+
+class User(BaseModel):
+    username: str
+    password: str
+
+# API Router
+router = APIRouter()
+
+# User Routes
+@router.post("/signup")
+async def signup(user: User):
+    user_exists = await database.users.find_one({"username": user.username})
+    if user_exists:
+        raise HTTPException(status_code=400, detail="User already exists")
+    await database.users.insert_one(user.dict())
+    return {"message": "User created successfully"}
+
+# Todo Routes
+@router.post("/todos")
+async def create_todo(todo: Todo):
+    result = await database.todos.insert_one(todo.dict())
+    return {"id": str(result.inserted_id)}
+
+@router.get("/todos/{id}")
+async def get_todo_by_id(id: str):
+    todo = await database.todos.find_one({"_id": ObjectId(id)})
+    if not todo:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return {"id": str(todo["_id"]), **{key: value for key, value in todo.items() if key != "_id"}}
+
+@router.get("/todos")
+async def get_todos(
+    completed: Optional[bool] = None,
+    category: Optional[str] = None,
+    priority: Optional[int] = None,
+    due_before: Optional[datetime] = None,
+    due_after: Optional[datetime] = None
+):
+    # Bonus: Basic search functionality
+    query = {}
+    if completed is not None:
+        query["completed"] = completed
+    if category:
+        query["category"] = category
+    if priority:
+        query["priority"] = priority
+    if due_before:
+        query["due_date"] = {"$lt": due_before}
+    if due_after:
+        query.setdefault("due_date", {})["$gte"] = due_after
+
+    todos = await database.todos.find(query).to_list(None)  # Fetch all matching todos
+    return [{"id": str(todo["_id"]), **{key: value for key, value in todo.items() if key != "_id"}} for todo in todos]
+
+@router.put("/todos/{id}")
+async def update_todo(id: str, todo: Todo):
+    result = await database.todos.update_one({"_id": ObjectId(id)}, {"$set": todo.dict()})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return {"message": "Todo updated"}
+
+@router.delete("/todos/{id}")
+async def delete_todo(id: str):
+    result = await database.todos.delete_one({"_id": ObjectId(id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return {"message": "Todo deleted"}
+
+# FastAPI App
+app = FastAPI()
+
+app.include_router(router)
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Todo List API with Bonus Features!"}
+
+if _name_ == "_main_":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
